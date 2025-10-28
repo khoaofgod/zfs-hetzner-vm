@@ -286,7 +286,11 @@ function install_zfs_on_rescue_system {
     # Enable Hetzner bookworm-backports
     sed -i 's/^# deb http:\/\/mirror.hetzner.com\/debian\/packages bookworm-backports/deb http:\/\/mirror.hetzner.com\/debian\/packages bookworm-backports/' /etc/apt/sources.list
     apt update
-    apt -t bookworm-backports install -y zfsutils-linux
+    # Install ZFS with automatic configuration file handling
+    DEBIAN_FRONTEND=noninteractive apt -t bookworm-backports install -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        zfsutils-linux
 }
 
 # ---- Disk Partitioning Functions ----
@@ -607,11 +611,14 @@ apt update
 # Install generic kernel (creates files in ZFS dataset /boot)
 apt install -y --no-install-recommends linux-image-generic linux-headers-generic
 
-# Install ZFS utilities and aux packages
+# Install ZFS utilities and aux packages with automatic configuration file handling
 
 echo "zfs-dkms zfs-dkms/note-incompatible-licenses note true" | debconf-set-selections
 
-apt install -y zfs-dkms zfsutils-linux zfs-initramfs software-properties-common bash curl nano htop net-tools ssh
+DEBIAN_FRONTEND=noninteractive apt install -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    zfs-dkms zfsutils-linux zfs-initramfs software-properties-common bash curl nano htop net-tools ssh
 
 # Ensure ZFS module is included in initramfs
 echo "zfs" >> /etc/initramfs-tools/modules
