@@ -3,7 +3,7 @@
 [![shellcheck](https://github.com/khoaofgod/zfs-hetzner-vm/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/khoaofgod/zfs-hetzner-vm/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Automated installation scripts for Debian and Ubuntu with ZFS root filesystem on Hetzner servers (Cloud, Virtual, and Dedicated).
+> Automated installation scripts for Debian and Ubuntu with ZFS root filesystem on Hetzner servers (Cloud, Virtual, and Dedicated). Supports both x86_64 and ARM64 architectures.
 
 ## 🚀 Quick Start
 
@@ -89,8 +89,15 @@ wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetz
 ```
 
 **Ubuntu 24.04 LTS (Noble Numbat)** ✨ Latest
+
+For x86_64 (Intel/AMD) servers:
 ```bash
 wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu24-zfs-setup.sh | bash -
+```
+
+For ARM64 servers:
+```bash
+wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu24-zfs-setup-arm64.sh | bash -
 ```
 
 ### Step 4: Configure Installation
@@ -110,6 +117,31 @@ The script will:
 5. Automatically reboot the system
 
 After reboot, you can log in with your SSH key and the root password you set.
+
+---
+
+## 🖥️ Architecture Support
+
+### x86_64 (Intel/AMD) Servers
+
+Use the standard scripts for Intel/AMD architecture servers:
+- Most Hetzner Cloud VPS and dedicated servers
+- Uses Hetzner's fast Ubuntu mirror
+- Includes extlinux bootloader packages
+
+### ARM64 Servers
+
+Use the dedicated `-arm64` scripts for ARM64 architecture servers:
+- ARM64 dedicated servers from Hetzner
+- Uses Ubuntu ports repository (ports.ubuntu.com)
+- Includes GRUB-EFI bootloader packages for ARM64
+
+**Important:** Always use the architecture-specific script that matches your server's CPU architecture. You can check your server's architecture in the rescue system with:
+
+```bash
+uname -m
+# Output should be x86_64 for Intel/AMD or aarch64/arm64 for ARM64
+```
 
 ---
 
@@ -148,6 +180,7 @@ mdadm --stop --scan
 ✅ **Fully Automated Installation** - One command to complete installation
 ✅ **ZFS Root Filesystem** - Advanced storage with snapshots, compression, and checksumming
 ✅ **Multiple OS Support** - Debian 10-13 and Ubuntu 18.04-24.04 LTS
+✅ **Multi-Architecture Support** - Works on x86_64 and ARM64 servers
 ✅ **Optimized for Hetzner** - Tested on Cloud, VPS, and Dedicated Servers
 ✅ **Secure by Default** - SSH key authentication, no password login
 ✅ **EFI and BIOS Support** - Works with both modern UEFI and legacy BIOS systems
@@ -309,7 +342,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 | Ubuntu 18.04 | `wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu18-zfs-setup.sh \| bash -` |
 | Ubuntu 20.04 | `wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu20-zfs-setup.sh \| bash -` |
 | Ubuntu 22.04 | `wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu22-zfs-setup.sh \| bash -` |
-| Ubuntu 24.04 | `wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu24-zfs-setup.sh \| bash -` |
+| Ubuntu 24.04 (x86_64) | `wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu24-zfs-setup.sh \| bash -` |
+| Ubuntu 24.04 (ARM64) | `wget -qO- https://raw.githubusercontent.com/khoaofgod/zfs-hetzner-vm/master/hetzner-ubuntu24-zfs-setup-arm64.sh \| bash -` |
 
 ---
 
@@ -353,9 +387,16 @@ ZFS offers enterprise-grade features for your servers:
 - ✅ Improved error handling and logging
 - ✅ Enhanced ZFSBootMenu integration for UEFI systems
 
+### Recent Updates (ARM64 Support)
+
+- ✅ Added ARM64 architecture support with dedicated scripts
+- ✅ Ubuntu ports repository integration for ARM64
+- ✅ Architecture-specific bootloader packages (GRUB-EFI for ARM64)
+- ✅ Updated documentation with ARM64 installation instructions
+- ✅ Multi-architecture support in README and quick reference
+
 ### Coming Soon
 
-- [ ] Support for ARM64 architecture
 - [ ] Optional encryption setup
 - [ ] Custom ZFS pool layouts
 - [ ] Automated snapshot scheduling
