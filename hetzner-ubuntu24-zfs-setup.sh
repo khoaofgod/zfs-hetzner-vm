@@ -272,7 +272,10 @@ function remove_unused_kernels {
         for pkg in "linux-headers-$kver" "linux-image-$kver"; do
             if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
                 echo "Purging $pkg ..."
-                apt purge --yes "$pkg"
+                DEBIAN_FRONTEND=noninteractive apt purge --yes \
+                    -o Dpkg::Options::="--force-confdef" \
+                    -o Dpkg::Options::="--force-confold" \
+                    "$pkg"
             else
                 echo "Package $pkg not installed, skipping."
             fi
