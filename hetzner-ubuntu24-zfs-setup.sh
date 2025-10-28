@@ -286,6 +286,7 @@ function remove_unused_kernels {
 function install_zfs_on_rescue_system {
     echo "======= Installing ZFS on rescue system =========="
     echo "zfs-dkms zfs-dkms/note-incompatible-licenses note true" | debconf-set-selections
+    echo "zfsutils-linux zfsutils-linux/stop-before-first-install boolean false" | debconf-set-selections
     # Enable Hetzner bookworm-backports
     sed -i 's/^# deb http:\/\/mirror.hetzner.com\/debian\/packages bookworm-backports/deb http:\/\/mirror.hetzner.com\/debian\/packages bookworm-backports/' /etc/apt/sources.list
     apt update
@@ -293,6 +294,7 @@ function install_zfs_on_rescue_system {
     DEBIAN_FRONTEND=noninteractive apt -t bookworm-backports install -y \
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
+        -o Dpkg::Options::="--force-confnew" \
         zfsutils-linux
 }
 
