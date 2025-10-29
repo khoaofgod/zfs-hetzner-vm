@@ -695,7 +695,7 @@ apt install -y grub-efi-arm64 grub-efi-arm64-bin efibootmgr
 echo "Creating GRUB configuration..."
 
 # Update GRUB configuration
-cat > /etc/default/grub <<'EOF'
+cat > /etc/default/grub <<EOF
 # If you change this file, run 'update-grub' afterwards to update
 # /boot/grub/grub.cfg.
 # For full documentation of the options in this file, see:
