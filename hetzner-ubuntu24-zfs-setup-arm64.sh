@@ -672,18 +672,103 @@ CONF
 
 # ---- Bootloader Functions ----
 function setup_efi_boot {
-    echo "======= Setting up EFI boot =========="
-    
+    echo "======= Setting up ARM64 EFI boot with GRUB =========="
+
     # Mount EFI System Partition
     mkdir -p "$MAIN_BOOT"
     mount "$BOOT_PART" "$MAIN_BOOT"
-    
-    # Create EFI directory structure    
-    mkdir -p "$MAIN_BOOT/EFI/Boot"
-    
-    # Download ZFSBootMenu EFI binary
-    echo "Downloading ZFSBootMenu EFI binary from: $ZBM_EFI_URL"
-    curl -L "$ZBM_EFI_URL" -o "$MAIN_BOOT/EFI/Boot/bootx64.efi"    
+
+    # Mount EFI partition inside the chroot
+    mkdir -p "$TARGET/boot/efi"
+    mount "$BOOT_PART" "$TARGET/boot/efi"
+
+    # Install and configure GRUB for ARM64 in the chrooted system
+    chroot "$TARGET" /bin/bash <<EOF
+set -euo pipefail
+
+# Install GRUB for ARM64 UEFI
+echo "Installing GRUB for ARM64 UEFI..."
+apt update
+apt install -y grub-efi-arm64 grub-efi-arm64-bin efibootmgr
+
+# Create GRUB configuration
+echo "Creating GRUB configuration..."
+
+# Update GRUB configuration
+cat > /etc/default/grub <<'GRUB_CFG'
+# If you change this file, run 'update-grub' afterwards to update
+# /boot/grub/grub.cfg.
+# For full documentation of the options in this file, see:
+#   info -f grub -n 'Simple configuration'
+
+GRUB_DEFAULT=0
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_TIMEOUT=0
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2> /dev/null || echo Debian`
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+GRUB_CMDLINE_LINUX=""
+
+# Uncomment to enable BadRAM filtering, modify to suit your needs
+# This works with Linux (no patch required) and with any kernel that obtains
+# the memory map information from GRUB (GNU Mach, kernel of FreeBSD ...)
+#GRUB_BADRAM="0x01234567,0xfefefefe,0x89abcdef,0xefefefef"
+
+# Uncomment to disable graphical terminal (grub-pc only)
+#GRUB_TERMINAL=console
+
+# The resolution used on graphical terminal
+# note that you can use only modes which your graphic card supports via VBE
+# you can see them in real GRUB with the command `vbeinfo'
+#GRUB_GFXMODE=640x480
+
+# Uncomment if you don't want GRUB to pass "root=UUID=xxx" parameter to Linux
+#GRUB_DISABLE_LINUX_UUID=true
+
+# Uncomment to disable generation of recovery mode menu entries
+#GRUB_DISABLE_RECOVERY=true
+
+# Uncomment to get a beep at grub start
+#GRUB_INIT_TUNE="480 440 1"
+
+GRUB_SAVEDEFAULT=true
+GRUB_ENABLE_CRYPTODISK=y
+GRUB_DISABLE_OS_PROBER=true
+GRUB_OS_PROBER_SKIP_LIST="false"
+GRUB_CMDLINE_LINUX="root=ZFS=rpool/ROOT/ubuntu rw"
+GRUB_TIMEOUT=5
+GRUB_TIMEOUT_STYLE=menu
+GRUB_DISTRIBUTOR="Ubuntu"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet"
+GRUB_TERMINAL=console
+GRUB_DISABLE_SUBMENU=y
+GRUB_INIT_TUNE="480 440 1"
+
+# ZFS specific options
+GRUB_CMDLINE_LINUX="root=ZFS=rpool/ROOT/ubuntu rw"
+GRUB_DISABLE_LINUX_UUID=true
+GRUB_DISABLE_LINUX_RECOVERY=true
+
+# Enable ZFS support in GRUB
+echo 'GRUB_CMDLINE_LINUX="root=ZFS=rpool/ROOT/ubuntu rw"' >> /etc/default/grub
+echo 'GRUB_DISABLE_LINUX_UUID=true' >> /etc/default/grub
+
+EOF
+
+# Install GRUB to EFI
+echo "Installing GRUB to EFI partition..."
+grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram
+
+# Update GRUB configuration
+echo "Updating GRUB configuration..."
+update-grub
+
+# Create EFI boot entry
+echo "Creating EFI boot entry..."
+efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi"
+
+EOF
+
+    echo "✓ ARM64 GRUB EFI boot setup completed"
 }
 
 function setup_bios_boot {
@@ -743,18 +828,19 @@ EOF
 }
 
 function configure_bootloader {
-    echo "======= Setting up boot based on firmware type =========="
+    echo "======= Setting up ARM64 boot based on firmware type =========="
     if [ "$EFI_MODE" = true ]; then
         setup_efi_boot
     else
         setup_bios_boot
     fi
 
-    echo "======= Configuring ZFSBootMenu for auto-detection =========="
-    zfs set org.zfsbootmenu:commandline="ro quiet" "$ZFS_POOL/ROOT/ubuntu"
+    echo "======= Configuring ZFS root dataset for GRUB =========="
+    # Set the ZFS root dataset as bootable
+    zpool set bootfs="$ZFS_POOL/ROOT/ubuntu" "$ZFS_POOL"
 
-    echo "Boot configuration:"
-    zfs get org.zfsbootmenu:commandline "$ZFS_POOL/ROOT/ubuntu"
+    echo "✓ ARM64 bootloader configuration completed"
+    echo "Boot filesystem set to: $ZFS_POOL/ROOT/ubuntu"
 }
 
 # ---- System Services Functions ----
