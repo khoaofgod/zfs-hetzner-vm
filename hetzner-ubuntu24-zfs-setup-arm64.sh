@@ -683,7 +683,7 @@ function setup_efi_boot {
     mount "$BOOT_PART" "$TARGET/boot/efi"
 
     # Install and configure GRUB for ARM64 in the chrooted system
-    chroot "$TARGET" /bin/bash <<EOF
+    chroot "$TARGET" /bin/bash <<'EOF'
 set -euo pipefail
 
 # Install GRUB for ARM64 UEFI
@@ -695,7 +695,7 @@ apt install -y grub-efi-arm64 grub-efi-arm64-bin efibootmgr
 echo "Creating GRUB configuration..."
 
 # Update GRUB configuration
-cat > /etc/default/grub <<EOF
+cat > /etc/default/grub <<'GRUB_EOF'
 # If you change this file, run 'update-grub' afterwards to update
 # /boot/grub/grub.cfg.
 # For full documentation of the options in this file, see:
@@ -715,19 +715,64 @@ GRUB_SAVEDEFAULT=true
 GRUB_DISABLE_OS_PROBER=true
 
 # ZFS specific options - ensure ZFS root filesystem
-EOF
+GRUB_EOF
 
-# Install GRUB to EFI
-echo "Installing GRUB to EFI partition..."
-grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram
+# Try automatic GRUB installation first
+echo "Attempting automatic GRUB installation..."
+if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram; then
+    echo "✓ Automatic GRUB installation succeeded"
+else
+    echo "⚠ Automatic GRUB installation failed, attempting manual setup..."
+
+    # Manual GRUB setup as fallback
+    echo "Setting up GRUB manually..."
+
+    # Create EFI directory structure
+    mkdir -p /boot/efi/EFI/ubuntu
+
+    # Copy GRUB EFI files from the monolithic directory (the fix we discovered)
+    if [ -f /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi ]; then
+        echo "Found GRUB EFI file in monolithic directory, copying..."
+        cp /usr/lib/grub/arm64-efi/monolithic/grubaa64.efi /boot/efi/EFI/ubuntu/
+        echo "✓ Manual GRUB EFI file copy completed"
+    else
+        echo "❌ ERROR: GRUB EFI file not found in monolithic directory"
+        echo "Available files:"
+        find /usr/lib/grub/arm64-efi/ -name "*.efi" -type f 2>/dev/null || echo "No EFI files found"
+        exit 1
+    fi
+
+    # Copy additional GRUB modules if they exist
+    if [ -d /usr/lib/grub/arm64-efi ]; then
+        echo "Copying GRUB modules..."
+        mkdir -p /boot/efi/grub
+        cp -r /usr/lib/grub/arm64-efi/* /boot/efi/grub/ 2>/dev/null || true
+        echo "✓ GRUB modules copied"
+    fi
+fi
 
 # Update GRUB configuration
 echo "Updating GRUB configuration..."
 update-grub
 
-# Create EFI boot entry
+# Try to create EFI boot entry
 echo "Creating EFI boot entry..."
-efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi"
+if efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi"; then
+    echo "✓ EFI boot entry created successfully"
+else
+    echo "⚠ EFI boot entry creation failed, but installation can continue"
+    echo "You may need to manually add the boot entry in the server's rescue system"
+fi
+
+# Verify GRUB installation
+echo "Verifying GRUB installation..."
+if [ -f /boot/efi/EFI/ubuntu/grubaa64.efi ]; then
+    echo "✓ GRUB EFI file exists at /boot/efi/EFI/ubuntu/grubaa64.efi"
+    ls -la /boot/efi/EFI/ubuntu/
+else
+    echo "❌ ERROR: GRUB EFI file not found after installation"
+    exit 1
+fi
 
 EOF
 
