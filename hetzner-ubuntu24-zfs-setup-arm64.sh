@@ -688,6 +688,7 @@ set -euo pipefail
 
 # Export variables for chroot environment
 export BOOT_PART="$BOOT_PART"
+export ZFS_POOL="$ZFS_POOL"
 
 # Install GRUB for ARM64 UEFI with alternative package sources
 echo "Installing GRUB for ARM64 UEFI..."
@@ -706,10 +707,10 @@ echo "Installed GRUB files:"
 find /usr -name "*grub*" -type f 2>/dev/null | grep -E "(arm64|efi)" | head -20 || true
 
 # Create GRUB configuration
-echo "Creating GRUB configuration..."
+echo "Creating GRUB configuration with ZFS pool: \$ZFS_POOL"
 
-# Update GRUB configuration
-cat > /etc/default/grub <<'GRUB_EOF'
+# Update GRUB configuration with dynamic ZFS pool name
+cat > /etc/default/grub <<GRUB_EOF
 # If you change this file, run 'update-grub' afterwards to update
 # /boot/grub/grub.cfg.
 # For full documentation of the options in this file, see:
@@ -720,7 +721,7 @@ GRUB_TIMEOUT_STYLE=menu
 GRUB_TIMEOUT=5
 GRUB_DISTRIBUTOR="Ubuntu"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet"
-GRUB_CMDLINE_LINUX="root=ZFS=rpool/ROOT/ubuntu rw"
+GRUB_CMDLINE_LINUX="root=ZFS=\$ZFS_POOL/ROOT/ubuntu rw"
 GRUB_TERMINAL=console
 GRUB_DISABLE_SUBMENU=y
 GRUB_DISABLE_LINUX_UUID=true
@@ -734,9 +735,14 @@ GRUB_HIDDEN_TIMEOUT=0
 GRUB_GFXMODE=auto
 GRUB_EOF
 
+echo "GRUB configuration created with root=ZFS=\$ZFS_POOL/ROOT/ubuntu"
+
+# Initialize installation status
+AUTO_INSTALL_SUCCESS=false
+
 # Method 1: Try automatic GRUB installation with different options
 echo "Attempting automatic GRUB installation (method 1)..."
-if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram --verbose; then
+if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram --verbose 2>&1; then
     echo "✓ Automatic GRUB installation succeeded"
     AUTO_INSTALL_SUCCESS=true
 else
@@ -744,7 +750,7 @@ else
 
     # Method 2: Try without --no-nvram
     echo "Attempting automatic GRUB installation (method 2)..."
-    if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --verbose; then
+    if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --verbose 2>&1; then
         echo "✓ Automatic GRUB installation succeeded (method 2)"
         AUTO_INSTALL_SUCCESS=true
     else
@@ -812,29 +818,75 @@ else
     fi
 fi
 
-# Create fallback EFI boot entry in standard location
-if [ "$AUTO_INSTALL_SUCCESS" = false ]; then
-    echo "Creating fallback EFI boot entry..."
-    mkdir -p /boot/efi/EFI/BOOT
-    if [ -f /boot/efi/EFI/ubuntu/grubaa64.efi ]; then
-        cp /boot/efi/EFI/ubuntu/grubaa64.efi /boot/efi/EFI/BOOT/BOOTAA64.EFI
-        echo "✓ Fallback EFI boot entry created"
-    fi
+# Create fallback EFI boot entry in standard location (ALWAYS create this)
+echo "Creating fallback EFI boot entry..."
+mkdir -p /boot/efi/EFI/BOOT
+if [ -f /boot/efi/EFI/ubuntu/grubaa64.efi ]; then
+    cp /boot/efi/EFI/ubuntu/grubaa64.efi /boot/efi/EFI/BOOT/BOOTAA64.EFI
+    echo "✓ Fallback EFI boot entry created at /boot/efi/EFI/BOOT/BOOTAA64.EFI"
+else
+    echo "⚠ WARNING: Could not create fallback boot entry - source file missing"
 fi
+
+# Ensure GRUB directory structure exists
+echo "Ensuring GRUB directory structure..."
+mkdir -p /boot/grub
+mkdir -p /boot/efi/grub
 
 # Ensure ZFS support is available for GRUB
 echo "Ensuring ZFS support for GRUB..."
 modprobe zfs 2>/dev/null || true
 
+# Create GRUB environment block if it doesn't exist
+if [ ! -f /boot/grub/grubenv ]; then
+    grub-editenv /boot/grub/grubenv create 2>/dev/null || true
+fi
+
 # Update GRUB configuration with ZFS support
 echo "Updating GRUB configuration..."
-# Set environment variable to help GRUB find ZFS
-export ZFS_POOL="$ZFS_POOL"
-if update-grub; then
+echo "ZFS Pool: \$ZFS_POOL"
+echo "Boot filesystem: \$ZFS_POOL/ROOT/ubuntu"
+
+# Generate grub.cfg
+if update-grub 2>&1; then
     echo "✓ GRUB configuration updated successfully"
+    # Verify grub.cfg was created
+    if [ -f /boot/grub/grub.cfg ]; then
+        echo "✓ GRUB config file exists at /boot/grub/grub.cfg"
+        echo "First 10 lines of grub.cfg:"
+        head -n 10 /boot/grub/grub.cfg
+    else
+        echo "⚠ WARNING: /boot/grub/grub.cfg not found"
+    fi
 else
-    echo "⚠ GRUB configuration update had issues, but continuing..."
-    echo "This is common with ZFS root filesystems"
+    echo "⚠ GRUB configuration update had issues"
+    echo "This is common with ZFS root filesystems when grub-probe cannot detect ZFS"
+    echo "Creating minimal GRUB configuration..."
+
+    # Find kernel and initrd versions
+    KERNEL_VER=\$(ls /boot/vmlinuz-* 2>/dev/null | sed 's/.*vmlinuz-//' | sort -V | tail -n 1)
+    if [ -z "\$KERNEL_VER" ]; then
+        echo "ERROR: No kernel found in /boot"
+        ls -la /boot/
+    else
+        echo "Found kernel version: \$KERNEL_VER"
+
+        # Create a minimal working grub.cfg as fallback
+        cat > /boot/grub/grub.cfg <<GRUB_CFG
+set timeout=5
+set default=0
+
+menuentry 'Ubuntu \$KERNEL_VER (ZFS Root)' {
+    insmod gzio
+    insmod part_gpt
+    insmod zfs
+    set root='hd0,gpt2'
+    linux /ROOT/ubuntu@/boot/vmlinuz-\$KERNEL_VER root=ZFS=\$ZFS_POOL/ROOT/ubuntu rw quiet
+    initrd /ROOT/ubuntu@/boot/initrd.img-\$KERNEL_VER
+}
+GRUB_CFG
+        echo "✓ Minimal GRUB configuration created for kernel \$KERNEL_VER"
+    fi
 fi
 
 # Try to create EFI boot entry (multiple methods)
@@ -860,32 +912,73 @@ else
 fi
 
 # Verify GRUB installation comprehensively
-echo "Verifying GRUB installation..."
-echo "EFI partition contents:"
-ls -la /boot/efi/EFI/
-echo "Ubuntu EFI directory contents:"
-ls -la /boot/efi/EFI/ubuntu/
-echo "GRUB modules:"
-ls -la /boot/efi/grub/ 2>/dev/null || echo "No GRUB modules directory"
+echo ""
+echo "=========================================="
+echo "  GRUB Installation Verification"
+echo "=========================================="
 
+# Check critical GRUB files
+GRUB_STATUS="SUCCESS"
+
+echo "Checking GRUB EFI files..."
 if [ -f /boot/efi/EFI/ubuntu/grubaa64.efi ]; then
-    echo "✓ GRUB EFI file exists at /boot/efi/EFI/ubuntu/grubaa64.efi"
-    file /boot/efi/EFI/ubuntu/grubaa64.efi
-
-    # Check if fallback exists
-    if [ -f /boot/efi/EFI/BOOT/BOOTAA64.EFI ]; then
-        echo "✓ Fallback EFI boot entry exists at /boot/efi/EFI/BOOT/BOOTAA64.EFI"
-    fi
+    echo "✓ Main GRUB EFI: /boot/efi/EFI/ubuntu/grubaa64.efi"
+    file /boot/efi/EFI/ubuntu/grubaa64.efi 2>/dev/null || true
 else
-    echo "❌ ERROR: GRUB EFI file not found after installation"
+    echo "❌ ERROR: Main GRUB EFI file not found"
+    GRUB_STATUS="FAILED"
+fi
+
+if [ -f /boot/efi/EFI/BOOT/BOOTAA64.EFI ]; then
+    echo "✓ Fallback boot entry: /boot/efi/EFI/BOOT/BOOTAA64.EFI"
+else
+    echo "⚠ WARNING: Fallback boot entry not found"
+fi
+
+echo ""
+echo "Checking GRUB configuration..."
+if [ -f /boot/grub/grub.cfg ]; then
+    echo "✓ GRUB config: /boot/grub/grub.cfg"
+    echo "  Size: \$(wc -l < /boot/grub/grub.cfg) lines"
+else
+    echo "❌ ERROR: GRUB configuration file not found"
+    GRUB_STATUS="FAILED"
+fi
+
+if [ -f /etc/default/grub ]; then
+    echo "✓ GRUB defaults: /etc/default/grub"
+    echo "  Boot device: \$(grep GRUB_CMDLINE_LINUX= /etc/default/grub | head -1)"
+else
+    echo "⚠ WARNING: /etc/default/grub not found"
+fi
+
+echo ""
+echo "EFI partition structure:"
+ls -la /boot/efi/EFI/ 2>/dev/null || echo "Could not list EFI partition"
+
+echo ""
+echo "Boot directory contents:"
+ls -la /boot/ | grep -E "(vmlinuz|initrd|grub)" || echo "Could not list boot directory"
+
+# Show current EFI boot entries
+echo ""
+echo "EFI Boot Manager entries:"
+if command -v efibootmgr >/dev/null 2>&1; then
+    efibootmgr -v 2>/dev/null || echo "⚠ Could not display EFI boot entries (normal in chroot)"
+else
+    echo "⚠ efibootmgr not available"
+fi
+
+echo ""
+echo "=========================================="
+if [ "\$GRUB_STATUS" = "SUCCESS" ]; then
+    echo "✓ GRUB installation verification PASSED"
+else
+    echo "❌ GRUB installation verification FAILED"
+    echo "Critical files are missing. Installation cannot continue."
     exit 1
 fi
-
-# Show current EFI boot entries if efibootmgr is working
-if command -v efibootmgr >/dev/null 2>&1; then
-    echo "Current EFI boot entries:"
-    efibootmgr -v 2>/dev/null || echo "Could not display EFI boot entries"
-fi
+echo "=========================================="
 
 EOF
 
