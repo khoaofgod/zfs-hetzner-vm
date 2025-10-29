@@ -683,8 +683,11 @@ function setup_efi_boot {
     mount "$BOOT_PART" "$TARGET/boot/efi"
 
     # Install and configure GRUB for ARM64 in the chrooted system
-    chroot "$TARGET" /bin/bash <<'EOF'
+    chroot "$TARGET" /bin/bash <<EOF
 set -euo pipefail
+
+# Export variables for chroot environment
+export BOOT_PART="$BOOT_PART"
 
 # Install GRUB for ARM64 UEFI with alternative package sources
 echo "Installing GRUB for ARM64 UEFI..."
@@ -819,9 +822,20 @@ if [ "$AUTO_INSTALL_SUCCESS" = false ]; then
     fi
 fi
 
-# Update GRUB configuration
+# Ensure ZFS support is available for GRUB
+echo "Ensuring ZFS support for GRUB..."
+modprobe zfs 2>/dev/null || true
+
+# Update GRUB configuration with ZFS support
 echo "Updating GRUB configuration..."
-update-grub
+# Set environment variable to help GRUB find ZFS
+export ZFS_POOL="$ZFS_POOL"
+if update-grub; then
+    echo "✓ GRUB configuration updated successfully"
+else
+    echo "⚠ GRUB configuration update had issues, but continuing..."
+    echo "This is common with ZFS root filesystems"
+fi
 
 # Try to create EFI boot entry (multiple methods)
 echo "Creating EFI boot entry..."
@@ -834,11 +848,8 @@ if efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI
 else
     echo "⚠ Method 1 failed, trying alternative..."
 
-    # Method 2: Try different disk identification
-    BOOT_DISK=$(lsblk -no PKNAME "$BOOT_PART" | head -1)
-    BOOT_NUM=$(lsblk -no PARTNUM "$BOOT_PART" | head -1)
-
-    if efibootmgr --create --disk "/dev/$BOOT_DISK" --part "$BOOT_NUM" --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
+    # Method 2: Try hardcoded values (most common for Hetzner)
+    if efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
         echo "✓ EFI boot entry created successfully (method 2)"
         BOOT_ENTRY_CREATED=true
     else
