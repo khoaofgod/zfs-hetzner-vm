@@ -5,6 +5,48 @@ Automated Ubuntu 24.04 installation scripts for Hetzner servers with ZFS root fi
 
 ## Recent Updates
 
+### 2025-01-28 (CRITICAL): Fixed Unbound Variable Error in Heredoc
+
+**Error**: `main: line 686: location: unbound variable`
+**Status**: 🔴 **CRITICAL BUG FIXED** - Script aborted during EFI boot setup
+
+#### Root Cause:
+The script uses `<<EOF` (unquoted heredoc) for chroot, causing the **parent shell to expand ALL variables before passing to chroot**. When it tries to expand `${GRUB_EFI_LOCATIONS[@]}` (which only exists INSIDE the chroot), the array is undefined in parent context. With `set -u` enabled, this causes a fatal "unbound variable" error.
+
+#### Variable Expansion Order:
+```bash
+chroot "$TARGET" /bin/bash <<EOF
+  # 1. Parent expands: $BOOT_PART → /dev/vda1 ✓
+  # 2. Parent expands: ${GRUB_EFI_LOCATIONS[@]} → ERROR ✗ (not in parent)
+  # 3. Script aborts before chroot starts
+EOF
+```
+
+#### The Fix:
+**Escape chroot-local variables** to prevent parent shell expansion:
+```bash
+# BEFORE (BROKEN):
+for location in "${GRUB_EFI_LOCATIONS[@]}"; do
+
+# AFTER (FIXED):
+for location in "\${GRUB_EFI_LOCATIONS[@]:-}"; do
+  if [ -z "\${location:-}" ]; then continue; fi
+```
+
+#### Why This Works:
+- `\${var}` prevents parent shell from expanding
+- `[@]:-` provides empty default if array unset
+- Empty check skips null iterations
+- Variables evaluated IN chroot where they're defined
+
+#### Impact:
+- ✅ Script completes EFI boot setup
+- ✅ Manual GRUB fallback installation works
+- ✅ System boots with proper EFI files
+- ✅ No changes to successful code paths
+
+---
+
 ### 2025-01-28 (CRITICAL): Fixed Boot-Breaking GRUB Path Issues
 
 **Status**: 🔴 **CRITICAL BUG FIXED** - System would not boot
