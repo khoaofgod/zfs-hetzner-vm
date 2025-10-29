@@ -1196,7 +1196,14 @@ function unmount_all_datasets_and_partitions {
 
 function unmount_chroot_environment {
     echo "======= Unmounting virtual filesystems =========="
-    # Unmount virtual filesystems first
+
+    # Unmount EFI partition from inside chroot FIRST (critical for clean pool export)
+    if mountpoint -q "$TARGET/boot/efi"; then
+        echo "Unmounting $TARGET/boot/efi"
+        umount "$TARGET/boot/efi" 2>/dev/null || umount -l "$TARGET/boot/efi" 2>/dev/null || true
+    fi
+
+    # Unmount virtual filesystems
     for dir in dev/pts dev tmp run sys proc; do
         if mountpoint -q "$TARGET/$dir"; then
             echo "Unmounting $TARGET/$dir"
