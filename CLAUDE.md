@@ -5,6 +5,57 @@ Automated Ubuntu 24.04 installation scripts for Hetzner servers with ZFS root fi
 
 ## Recent Updates
 
+### 2025-01-28 (FINAL): Fixed Incomplete EFI Partition Unmount Sequence
+
+**Error**: EFI partition left mounted at `$TARGET/boot/efi` preventing clean ZFS pool export
+**Status**: ✅ **FIXED** - Clean pool export now works correctly
+
+#### Root Cause:
+The unmount sequence unmounted the EFI partition from `/main_boot` but failed to unmount it from inside the chroot at `$TARGET/boot/efi`. This left the EFI partition mounted, which prevented:
+1. Clean unmount of the ZFS root dataset
+2. Proper ZFS pool export
+3. Clean system shutdown
+
+#### Symptoms:
+```
+WARNING: 1 dataset(s) still mounted after unmount attempt:
+rpool/ROOT/ubuntu                mounted   yes
+WARNING: /mnt/ubuntu is still mounted!
+/dev/sda1 on /mnt/ubuntu/boot/efi type vfat (rw,relatime,...)
+```
+
+#### The Fix:
+Added unmount step for `$TARGET/boot/efi` in `unmount_chroot_environment()` function **BEFORE** unmounting virtual filesystems:
+
+```bash
+# Unmount EFI partition from inside chroot FIRST (critical for clean pool export)
+if mountpoint -q "$TARGET/boot/efi"; then
+    echo "Unmounting $TARGET/boot/efi"
+    umount "$TARGET/boot/efi" 2>/dev/null || umount -l "$TARGET/boot/efi" 2>/dev/null || true
+fi
+```
+
+#### Impact:
+- ✅ Ensures clean ZFS pool export
+- ✅ Prevents dirty pool state
+- ✅ Allows proper system shutdown
+- ✅ No more "still mounted" warnings
+
+#### Unmount Order (Corrected):
+```
+1. Unmount $TARGET/boot/efi (EFI partition) ← NEW
+2. Unmount $TARGET/dev/pts (virtual filesystems)
+3. Unmount $TARGET/dev
+4. Unmount $TARGET/tmp
+5. Unmount $TARGET/run
+6. Unmount $TARGET/sys
+7. Unmount $TARGET/proc
+8. Unmount root ZFS dataset
+9. Export ZFS pool cleanly ✓
+```
+
+---
+
 ### 2025-01-28 (CRITICAL): Fixed Unbound Variable Error in Heredoc
 
 **Error**: `main: line 686: location: unbound variable`
