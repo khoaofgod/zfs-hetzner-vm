@@ -5,6 +5,81 @@ Automated Ubuntu 24.04 installation scripts for Hetzner servers with ZFS root fi
 
 ## Recent Updates
 
+### 2025-01-28 (CRITICAL): Fixed Boot-Breaking GRUB Path Issues
+
+**Status**: 🔴 **CRITICAL BUG FIXED** - System would not boot
+
+#### External Code Review Findings:
+An independent analysis identified critical boot failures that would prevent the system from booting. All issues have been fixed.
+
+#### Critical Fixes Applied:
+
+**1. 🔴 INVALID GRUB PATH SYNTAX (BOOT BREAKING)**
+- **Problem**: Used non-existent ZFS dataset notation in GRUB config
+  ```bash
+  # WRONG (would cause boot failure):
+  linux /ROOT/ubuntu@/boot/vmlinuz-6.x.x
+  initrd /ROOT/ubuntu@/boot/initrd.img-6.x.x
+  ```
+- **Fix**: Use standard bootfs paths that GRUB understands
+  ```bash
+  # CORRECT:
+  linux /boot/vmlinuz-6.x.x
+  initrd /boot/initrd.img-6.x.x
+  ```
+- **Impact**: System would drop to GRUB rescue shell on boot
+- **Solution**: GRUB automatically uses ZFS bootfs property, just reference /boot/
+
+**2. 🟡 HARDCODED DISK DEVICE (/dev/sda)**
+- **Problem**: efibootmgr always used `/dev/sda` even when disk was `/dev/vda`
+- **Impact**: EFI boot entries not created on Hetzner Cloud VMs (use VirtIO)
+- **Fix**: Dynamic disk detection from `$BOOT_PART` variable
+- **Result**: Works on both Cloud VMs (/dev/vda) and dedicated (/dev/sda)
+
+**3. 🟡 GRUB CONFIGURATION ISSUES**
+- **Removed**: `GRUB_DISABLE_LINUX_UUID=true` (breaks ZFS snapshots/clones)
+- **Removed**: Redundant "rw" from boot parameters (GRUB adds automatically)
+- **Added**: Explicit ZFS module loading: `--modules="zfs part_gpt"`
+- **Added**: `search --label` for proper ZFS pool detection
+
+**4. 🔧 IMPROVED BOOT ENTRY CREATION**
+- Dynamic disk/partition number extraction from detected device
+- Better error messages distinguishing Cloud VMs vs dedicated servers
+- Enhanced troubleshooting documentation
+
+#### Code Changes:
+```bash
+# Before (BROKEN):
+linux /ROOT/ubuntu@/boot/vmlinuz-$KVER root=ZFS=rpool/ROOT/ubuntu rw
+efibootmgr --create --disk /dev/sda --part 1
+
+# After (WORKING):
+search --label $ZFS_POOL --set=root
+linux /boot/vmlinuz-$KVER root=ZFS=$ZFS_POOL/ROOT/ubuntu
+efibootmgr --create --disk $BOOT_DISK --part $BOOT_NUM
+```
+
+#### Boot Chain (Corrected):
+```
+1. UEFI Firmware
+   ↓
+2. /boot/efi/EFI/ubuntu/grubaa64.efi (or BOOT/BOOTAA64.EFI fallback)
+   ↓
+3. GRUB loads with ZFS modules
+   ↓
+4. search --label finds ZFS pool
+   ↓
+5. GRUB reads /boot/grub/grub.cfg from bootfs dataset
+   ↓
+6. Kernel loaded from /boot/vmlinuz (in ZFS bootfs)
+   ↓
+7. initrd loads ZFS modules
+   ↓
+8. Ubuntu boots from ZFS root
+```
+
+---
+
 ### 2025-01-28: Comprehensive ARM64 GRUB Boot Improvements
 
 #### Critical Fixes Applied:
