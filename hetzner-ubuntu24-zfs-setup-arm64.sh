@@ -787,7 +787,7 @@ else
             fi
         done
 
-        if [ "$GRUB_EFI_FOUND" = false ]; then
+        if [ "\$GRUB_EFI_FOUND" = false ]; then
             echo "❌ ERROR: GRUB EFI file not found in any expected location"
             echo "Searching for any GRUB EFI files..."
             find /usr -name "*grub*.efi" -type f 2>/dev/null || echo "No GRUB EFI files found"
