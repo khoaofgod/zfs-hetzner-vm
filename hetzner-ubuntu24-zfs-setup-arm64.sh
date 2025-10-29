@@ -307,33 +307,39 @@ function partition_disk {
     sgdisk -Z "$INSTALL_DISK"  
     
     if [ "$EFI_MODE" = true ]; then
-        echo "Creating EFI partition layout"
-        # EFI System Partition (ESP) - 64MB is plenty for ZFSBootMenu
+        echo "Creating EFI partition layout with separate /boot"
+        # EFI System Partition (ESP) - 128MB for GRUB EFI binaries
         sgdisk -n1:1M:+128M -t1:ef00 -c1:"EFI" "$INSTALL_DISK"
-        # ZFS partition
-        sgdisk -n2:0:0   -t2:bf00 -c2:"zfs"  "$INSTALL_DISK"
+        # /boot partition - 2GB for kernels, initrd, and GRUB config (ext4, fully supported by GRUB)
+        sgdisk -n2:0:+2G -t2:8300 -c2:"boot" "$INSTALL_DISK"
+        # ZFS partition - rest of disk
+        sgdisk -n3:0:0   -t3:bf00 -c3:"zfs"  "$INSTALL_DISK"
     else
-        echo "Creating BIOS partition layout"
-        # /boot partition - 64MB is also sufficient for BIOS ZFSBootMenu
-        sgdisk -n1:1M:+128M -t1:8300 -c1:"boot" "$INSTALL_DISK"
-        # ZFS partition
-        sgdisk -n2:0:0   -t2:bf00 -c2:"zfs"  "$INSTALL_DISK"
-        # Set legacy BIOS bootable flag
-        sgdisk -A 1:set:2 "$INSTALL_DISK"
+        echo "Creating BIOS partition layout with separate /boot"
+        # BIOS boot partition
+        sgdisk -n1:1M:+1M -t1:ef02 -c1:"BIOS" "$INSTALL_DISK"
+        # /boot partition - 2GB for kernels, initrd, and GRUB config
+        sgdisk -n2:0:+2G -t2:8300 -c2:"boot" "$INSTALL_DISK"
+        # ZFS partition - rest of disk
+        sgdisk -n3:0:0   -t3:bf00 -c3:"zfs"  "$INSTALL_DISK"
     fi
-    
+
     partprobe "$INSTALL_DISK" || true
     udevadm settle
-    
+
     # Set partition variables based on mode
     if [ "$EFI_MODE" = true ]; then
-        BOOT_PART="$(blkid -t PARTLABEL='EFI' -o device)"
+        EFI_PART="$(blkid -t PARTLABEL='EFI' -o device)"
+        BOOT_PART="$(blkid -t PARTLABEL='boot' -o device)"
         ZFS_PART="$(blkid -t PARTLABEL='zfs' -o device)"
         # Format ESP as FAT32
-        mkfs.fat -F 32 -n EFI "$BOOT_PART"
+        mkfs.fat -F 32 -n EFI "$EFI_PART"
+        # Format /boot as ext4 (GRUB has full support)
+        mkfs.ext4 -F -L boot "$BOOT_PART"
     else
         BOOT_PART="$(blkid -t PARTLABEL='boot' -o device)"
         ZFS_PART="$(blkid -t PARTLABEL='zfs' -o device)"
+        # Format /boot as ext4
         mkfs.ext4 -F -L boot "$BOOT_PART"
     fi
 }
@@ -674,19 +680,27 @@ CONF
 function setup_efi_boot {
     echo "======= Setting up ARM64 EFI boot with GRUB =========="
 
-    # Mount EFI System Partition
-    mkdir -p "$MAIN_BOOT"
-    mount "$BOOT_PART" "$MAIN_BOOT"
+    # Mount /boot partition (ext4) - MUST be mounted first
+    mkdir -p "$TARGET/boot"
+    mount "$BOOT_PART" "$TARGET/boot"
+    echo "✓ Mounted /boot partition (ext4) at $TARGET/boot"
 
-    # Mount EFI partition inside the chroot
+    # Mount EFI System Partition inside /boot
     mkdir -p "$TARGET/boot/efi"
-    mount "$BOOT_PART" "$TARGET/boot/efi"
+    mount "$EFI_PART" "$TARGET/boot/efi"
+    echo "✓ Mounted EFI partition at $TARGET/boot/efi"
+
+    # Also mount EFI partition to a direct location for reference
+    mkdir -p "$MAIN_BOOT"
+    mount "$EFI_PART" "$MAIN_BOOT"
+    echo "✓ Mounted EFI partition at $MAIN_BOOT (reference)"
 
     # Install and configure GRUB for ARM64 in the chrooted system
     chroot "$TARGET" /bin/bash <<EOF
 set -euo pipefail
 
 # Export variables for chroot environment
+export EFI_PART="$EFI_PART"
 export BOOT_PART="$BOOT_PART"
 export ZFS_POOL="$ZFS_POOL"
 
@@ -739,8 +753,9 @@ echo "GRUB configuration created with root=ZFS=\$ZFS_POOL/ROOT/ubuntu"
 AUTO_INSTALL_SUCCESS=false
 
 # Method 1: Try automatic GRUB installation with ZFS modules
+# Use --boot-directory=/boot so grub.cfg stays on ZFS, but we'll add bootstrap on EFI
 echo "Attempting automatic GRUB installation (method 1)..."
-if grub-install --target=arm64-efi --efi-directory=/boot/efi --boot-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --no-nvram --verbose 2>&1; then
+if grub-install --target=arm64-efi --efi-directory=/boot/efi --boot-directory=/boot --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --no-nvram --verbose 2>&1; then
     echo "✓ Automatic GRUB installation succeeded with ZFS modules"
     AUTO_INSTALL_SUCCESS=true
 else
@@ -748,7 +763,7 @@ else
 
     # Method 2: Try without --no-nvram but with ZFS modules
     echo "Attempting automatic GRUB installation (method 2)..."
-    if grub-install --target=arm64-efi --efi-directory=/boot/efi --boot-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --verbose 2>&1; then
+    if grub-install --target=arm64-efi --efi-directory=/boot/efi --boot-directory=/boot --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --verbose 2>&1; then
         echo "✓ Automatic GRUB installation succeeded (method 2) with ZFS modules"
         AUTO_INSTALL_SUCCESS=true
     else
@@ -881,6 +896,7 @@ else
         echo "Found kernel version: \$KERNEL_VER"
 
         # Create a minimal working grub.cfg as fallback
+        # NOTE: Paths are relative to /boot partition root (no /boot prefix needed)
         cat > /boot/grub/grub.cfg <<GRUB_CFG
 set timeout=5
 set default=0
@@ -888,78 +904,39 @@ set default=0
 menuentry 'Ubuntu \$KERNEL_VER (ZFS Root)' {
     insmod gzio
     insmod part_gpt
+    insmod ext2
     insmod zfs
-    search --label \$ZFS_POOL --set=root
-    linux /boot/vmlinuz-\$KERNEL_VER root=ZFS=\$ZFS_POOL/ROOT/ubuntu
-    initrd /boot/initrd.img-\$KERNEL_VER
+    # Kernel and initrd are on the /boot partition (ext4)
+    linux /vmlinuz-\$KERNEL_VER root=ZFS=\$ZFS_POOL/ROOT/ubuntu
+    initrd /initrd.img-\$KERNEL_VER
 }
 GRUB_CFG
         echo "✓ Minimal GRUB configuration created for kernel \$KERNEL_VER"
     fi
 fi
 
-# CRITICAL: Create bootstrap grub.cfg on EFI partition
-# This allows GRUB to find and access the ZFS pool, then load the real grub.cfg
-echo "Creating bootstrap grub.cfg on EFI partition..."
-mkdir -p /boot/efi/grub
-cat > /boot/efi/grub/grub.cfg <<'BOOTSTRAP_GRUB'
-# Bootstrap GRUB configuration for ZFS root
-# This file lives on the EFI partition (FAT32) and tells GRUB how to access ZFS
-
-insmod part_gpt
-insmod zfs
-
-# Search for ZFS pool and set it as root
-search --label \$ZFS_POOL --set=root --no-floppy
-
-# Try to load the main grub.cfg from ZFS root
-if [ -f (\$root)/boot/grub/grub.cfg ]; then
-    configfile (\$root)/boot/grub/grub.cfg
-else
-    # Fallback: if grub.cfg not found, try to boot directly
-    echo "Warning: Could not find grub.cfg on ZFS pool, attempting direct boot..."
-    insmod gzio
-
-    # Find kernel and initrd
-    set kernel_found=0
-    for kernel in (\$root)/boot/vmlinuz-*; do
-        set kernel_found=1
-        regexp --set=1:kver 'vmlinuz-(.*)' "\$kernel"
-
-        menuentry "Ubuntu \$kver (ZFS Root - Emergency Boot)" {
-            linux \$kernel root=ZFS=\$ZFS_POOL/ROOT/ubuntu
-            initrd (\$root)/boot/initrd.img-\$kver
-        }
-        break
-    done
-
-    if [ \$kernel_found -eq 0 ]; then
-        echo "ERROR: No kernel found on ZFS pool!"
-        echo "Dropping to GRUB rescue shell..."
-    fi
+# Create fallback boot entry
+echo "Creating fallback GRUB EFI boot entry..."
+mkdir -p /boot/efi/EFI/BOOT
+if [ -f /boot/efi/EFI/ubuntu/grubaa64.efi ]; then
+    cp /boot/efi/EFI/ubuntu/grubaa64.efi /boot/efi/EFI/BOOT/BOOTAA64.EFI
+    echo "✓ Fallback boot entry created at /boot/efi/EFI/BOOT/BOOTAA64.EFI"
 fi
-BOOTSTRAP_GRUB
-
-# Replace $ZFS_POOL placeholder with actual pool name
-sed -i "s/\\\$ZFS_POOL/$ZFS_POOL/g" /boot/efi/grub/grub.cfg
-
-echo "✓ Bootstrap grub.cfg created on EFI partition"
-echo "  Location: /boot/efi/grub/grub.cfg"
-echo "  This allows GRUB to access ZFS and load the main configuration"
 
 # Try to create EFI boot entry (multiple methods)
 echo "Creating EFI boot entry..."
-echo "Using boot partition: \$BOOT_PART"
+echo "Using EFI partition: \$EFI_PART"
+echo "Using /boot partition: \$BOOT_PART"
 BOOT_ENTRY_CREATED=false
 
-# Detect disk and partition number dynamically from BOOT_PART
-BOOT_DISK=\$(echo "\$BOOT_PART" | sed 's/[0-9]*$//')
-BOOT_NUM=\$(echo "\$BOOT_PART" | sed 's/.*[^0-9]\([0-9]*\)$/\1/')
+# Detect disk and partition number dynamically from EFI_PART
+EFI_DISK=\$(echo "\$EFI_PART" | sed 's/[0-9]*$//')
+EFI_NUM=\$(echo "\$EFI_PART" | sed 's/.*[^0-9]\([0-9]*\)$/\1/')
 
-echo "Disk: \$BOOT_DISK, Partition: \$BOOT_NUM"
+echo "EFI Disk: \$EFI_DISK, Partition: \$EFI_NUM"
 
 # Method 1: Use detected disk
-if efibootmgr --create --disk "\$BOOT_DISK" --part "\$BOOT_NUM" --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
+if efibootmgr --create --disk "\$EFI_DISK" --part "\$EFI_NUM" --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
     echo "✓ EFI boot entry created successfully"
     BOOT_ENTRY_CREATED=true
 else
@@ -967,7 +944,7 @@ else
     echo "Fallback boot entry at /boot/efi/EFI/BOOT/BOOTAA64.EFI will be used"
     echo ""
     echo "If manual boot entry needed after reboot, use:"
-    echo "  efibootmgr --create --disk \$BOOT_DISK --part \$BOOT_NUM --label \"ubuntu\" --loader \"\\EFI\\ubuntu\\grubaa64.efi\""
+    echo "  efibootmgr --create --disk \$EFI_DISK --part \$EFI_NUM --label \"ubuntu\" --loader \"\\EFI\\ubuntu\\grubaa64.efi\""
 fi
 
 # Verify GRUB installation comprehensively
@@ -1246,10 +1223,16 @@ function unmount_all_datasets_and_partitions {
 function unmount_chroot_environment {
     echo "======= Unmounting virtual filesystems =========="
 
-    # Unmount EFI partition from inside chroot FIRST (critical for clean pool export)
+    # Unmount EFI partition FIRST (inside /boot)
     if mountpoint -q "$TARGET/boot/efi"; then
         echo "Unmounting $TARGET/boot/efi"
         umount "$TARGET/boot/efi" 2>/dev/null || umount -l "$TARGET/boot/efi" 2>/dev/null || true
+    fi
+
+    # Unmount /boot partition SECOND (after /boot/efi)
+    if mountpoint -q "$TARGET/boot"; then
+        echo "Unmounting $TARGET/boot"
+        umount "$TARGET/boot" 2>/dev/null || umount -l "$TARGET/boot" 2>/dev/null || true
     fi
 
     # Unmount virtual filesystems
