@@ -718,19 +718,17 @@ cat > /etc/default/grub <<GRUB_EOF
 
 GRUB_DEFAULT=0
 GRUB_TIMEOUT_STYLE=menu
-GRUB_TIMEOUT=5
+GRUB_TIMEOUT=10
 GRUB_DISTRIBUTOR="Ubuntu"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet"
-GRUB_CMDLINE_LINUX="root=ZFS=\$ZFS_POOL/ROOT/ubuntu rw"
+GRUB_CMDLINE_LINUX="root=ZFS=\$ZFS_POOL/ROOT/ubuntu"
 GRUB_TERMINAL=console
 GRUB_DISABLE_SUBMENU=y
-GRUB_DISABLE_LINUX_UUID=true
 GRUB_DISABLE_LINUX_RECOVERY=true
-GRUB_SAVEDEFAULT=true
 GRUB_DISABLE_OS_PROBER=true
 
 # ZFS specific options - ensure ZFS root filesystem
-GRUB_TIMEOUT=10
+# Note: GRUB_DISABLE_LINUX_UUID removed to support ZFS snapshots/clones
 GRUB_HIDDEN_TIMEOUT=0
 GRUB_GFXMODE=auto
 GRUB_EOF
@@ -740,18 +738,18 @@ echo "GRUB configuration created with root=ZFS=\$ZFS_POOL/ROOT/ubuntu"
 # Initialize installation status
 AUTO_INSTALL_SUCCESS=false
 
-# Method 1: Try automatic GRUB installation with different options
+# Method 1: Try automatic GRUB installation with ZFS modules
 echo "Attempting automatic GRUB installation (method 1)..."
-if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --no-nvram --verbose 2>&1; then
-    echo "✓ Automatic GRUB installation succeeded"
+if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --no-nvram --verbose 2>&1; then
+    echo "✓ Automatic GRUB installation succeeded with ZFS modules"
     AUTO_INSTALL_SUCCESS=true
 else
     echo "⚠ Method 1 failed, trying alternative approach..."
 
-    # Method 2: Try without --no-nvram
+    # Method 2: Try without --no-nvram but with ZFS modules
     echo "Attempting automatic GRUB installation (method 2)..."
-    if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck --verbose 2>&1; then
-        echo "✓ Automatic GRUB installation succeeded (method 2)"
+    if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --verbose 2>&1; then
+        echo "✓ Automatic GRUB installation succeeded (method 2) with ZFS modules"
         AUTO_INSTALL_SUCCESS=true
     else
         echo "⚠ Both automatic methods failed, attempting manual setup..."
@@ -880,9 +878,9 @@ menuentry 'Ubuntu \$KERNEL_VER (ZFS Root)' {
     insmod gzio
     insmod part_gpt
     insmod zfs
-    set root='hd0,gpt2'
-    linux /ROOT/ubuntu@/boot/vmlinuz-\$KERNEL_VER root=ZFS=\$ZFS_POOL/ROOT/ubuntu rw quiet
-    initrd /ROOT/ubuntu@/boot/initrd.img-\$KERNEL_VER
+    search --label \$ZFS_POOL --set=root
+    linux /boot/vmlinuz-\$KERNEL_VER root=ZFS=\$ZFS_POOL/ROOT/ubuntu
+    initrd /boot/initrd.img-\$KERNEL_VER
 }
 GRUB_CFG
         echo "✓ Minimal GRUB configuration created for kernel \$KERNEL_VER"
@@ -891,24 +889,25 @@ fi
 
 # Try to create EFI boot entry (multiple methods)
 echo "Creating EFI boot entry..."
+echo "Using disk: \$BOOT_PART (from \$INSTALL_DISK)"
 BOOT_ENTRY_CREATED=false
 
-# Method 1: Standard efibootmgr
-if efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
-    echo "✓ EFI boot entry created successfully (method 1)"
+# Detect disk and partition number dynamically
+BOOT_DISK=\$(echo "\$BOOT_PART" | sed 's/[0-9]*$//')
+BOOT_NUM=\$(echo "\$BOOT_PART" | sed 's/.*[^0-9]\([0-9]*\)$/\1/')
+
+echo "Disk: \$BOOT_DISK, Partition: \$BOOT_NUM"
+
+# Method 1: Use detected disk
+if efibootmgr --create --disk "\$BOOT_DISK" --part "\$BOOT_NUM" --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
+    echo "✓ EFI boot entry created successfully"
     BOOT_ENTRY_CREATED=true
 else
-    echo "⚠ Method 1 failed, trying alternative..."
-
-    # Method 2: Try hardcoded values (most common for Hetzner)
-    if efibootmgr --create --disk /dev/sda --part 1 --label "ubuntu" --loader "\\EFI\\ubuntu\\grubaa64.efi" 2>/dev/null; then
-        echo "✓ EFI boot entry created successfully (method 2)"
-        BOOT_ENTRY_CREATED=true
-    else
-        echo "⚠ EFI boot entry creation failed, but installation can continue"
-        echo "You may need to manually add the boot entry in the server's rescue system"
-        echo "Use: efibootmgr --create --disk /dev/sda --part 1 --label \"ubuntu\" --loader \"\\EFI\\ubuntu\\grubaa64.efi\""
-    fi
+    echo "⚠ EFI boot entry creation failed (normal in chroot environment)"
+    echo "Fallback boot entry at /boot/efi/EFI/BOOT/BOOTAA64.EFI will be used"
+    echo ""
+    echo "If manual boot entry needed after reboot, use:"
+    echo "  efibootmgr --create --disk \$BOOT_DISK --part \$BOOT_NUM --label \"ubuntu\" --loader \"\\EFI\\ubuntu\\grubaa64.efi\""
 fi
 
 # Verify GRUB installation comprehensively
@@ -1244,14 +1243,17 @@ function show_final_instructions {
         echo "   3. Verify boot order prioritizes Ubuntu/EFI entry"
         echo "   4. Run: efibootmgr -v (to check boot entries)"
         echo "   5. Manual boot entry if needed:"
-        echo "      efibootmgr --create --disk /dev/sda --part 1"
-        echo "      --label \"ubuntu\" --loader \"\\EFI\\ubuntu\\grubaa64.efi\""
+        echo "      # First identify your disk (usually /dev/sda or /dev/vda)"
+        echo "      lsblk"
+        echo "      # Then create boot entry:"
+        echo "      efibootmgr --create --disk /dev/DISKNAME --part 1 \\"
+        echo "        --label \"ubuntu\" --loader \"\\EFI\\ubuntu\\grubaa64.efi\""
         echo ""
-        echo "💡 Hetzner ARM64 servers typically have Secure Boot disabled by default"
-        echo "   If boot fails, you may need to:"
-        echo "   - Disable Secure Boot in BIOS/UEFI settings"
-        echo "   - Set boot order to prioritize your Ubuntu installation"
-        echo "   - Use the fallback boot entry at EFI/BOOT/BOOTAA64.EFI"
+        echo "💡 Hetzner ARM64 servers:"
+        echo "   - Cloud VMs typically use /dev/vda (VirtIO)"
+        echo "   - Dedicated servers typically use /dev/sda (SCSI/SATA)"
+        echo "   - Secure Boot is usually disabled by default"
+        echo "   - Fallback boot entry available at: EFI/BOOT/BOOTAA64.EFI"
     else
         echo "🔧 BIOS boot troubleshooting:"
         echo "   1. Verify boot partition is set as bootable"
