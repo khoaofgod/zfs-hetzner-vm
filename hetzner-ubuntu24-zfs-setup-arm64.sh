@@ -740,7 +740,7 @@ AUTO_INSTALL_SUCCESS=false
 
 # Method 1: Try automatic GRUB installation with ZFS modules
 echo "Attempting automatic GRUB installation (method 1)..."
-if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --no-nvram --verbose 2>&1; then
+if grub-install --target=arm64-efi --efi-directory=/boot/efi --boot-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --no-nvram --verbose 2>&1; then
     echo "✓ Automatic GRUB installation succeeded with ZFS modules"
     AUTO_INSTALL_SUCCESS=true
 else
@@ -748,7 +748,7 @@ else
 
     # Method 2: Try without --no-nvram but with ZFS modules
     echo "Attempting automatic GRUB installation (method 2)..."
-    if grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --verbose 2>&1; then
+    if grub-install --target=arm64-efi --efi-directory=/boot/efi --boot-directory=/boot/efi --bootloader-id=ubuntu --modules="zfs part_gpt" --recheck --verbose 2>&1; then
         echo "✓ Automatic GRUB installation succeeded (method 2) with ZFS modules"
         AUTO_INSTALL_SUCCESS=true
     else
@@ -897,6 +897,55 @@ GRUB_CFG
         echo "✓ Minimal GRUB configuration created for kernel \$KERNEL_VER"
     fi
 fi
+
+# CRITICAL: Create bootstrap grub.cfg on EFI partition
+# This allows GRUB to find and access the ZFS pool, then load the real grub.cfg
+echo "Creating bootstrap grub.cfg on EFI partition..."
+mkdir -p /boot/efi/grub
+cat > /boot/efi/grub/grub.cfg <<'BOOTSTRAP_GRUB'
+# Bootstrap GRUB configuration for ZFS root
+# This file lives on the EFI partition (FAT32) and tells GRUB how to access ZFS
+
+insmod part_gpt
+insmod zfs
+
+# Search for ZFS pool and set it as root
+search --label \$ZFS_POOL --set=root --no-floppy
+
+# Try to load the main grub.cfg from ZFS root
+if [ -f (\$root)/boot/grub/grub.cfg ]; then
+    configfile (\$root)/boot/grub/grub.cfg
+else
+    # Fallback: if grub.cfg not found, try to boot directly
+    echo "Warning: Could not find grub.cfg on ZFS pool, attempting direct boot..."
+    insmod gzio
+
+    # Find kernel and initrd
+    set kernel_found=0
+    for kernel in (\$root)/boot/vmlinuz-*; do
+        set kernel_found=1
+        regexp --set=1:kver 'vmlinuz-(.*)' "\$kernel"
+
+        menuentry "Ubuntu \$kver (ZFS Root - Emergency Boot)" {
+            linux \$kernel root=ZFS=\$ZFS_POOL/ROOT/ubuntu
+            initrd (\$root)/boot/initrd.img-\$kver
+        }
+        break
+    done
+
+    if [ \$kernel_found -eq 0 ]; then
+        echo "ERROR: No kernel found on ZFS pool!"
+        echo "Dropping to GRUB rescue shell..."
+    fi
+fi
+BOOTSTRAP_GRUB
+
+# Replace $ZFS_POOL placeholder with actual pool name
+sed -i "s/\\\$ZFS_POOL/$ZFS_POOL/g" /boot/efi/grub/grub.cfg
+
+echo "✓ Bootstrap grub.cfg created on EFI partition"
+echo "  Location: /boot/efi/grub/grub.cfg"
+echo "  This allows GRUB to access ZFS and load the main configuration"
 
 # Try to create EFI boot entry (multiple methods)
 echo "Creating EFI boot entry..."
