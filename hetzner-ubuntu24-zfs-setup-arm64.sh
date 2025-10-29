@@ -900,10 +900,10 @@ fi
 
 # Try to create EFI boot entry (multiple methods)
 echo "Creating EFI boot entry..."
-echo "Using disk: \$BOOT_PART (from \$INSTALL_DISK)"
+echo "Using boot partition: \$BOOT_PART"
 BOOT_ENTRY_CREATED=false
 
-# Detect disk and partition number dynamically
+# Detect disk and partition number dynamically from BOOT_PART
 BOOT_DISK=\$(echo "\$BOOT_PART" | sed 's/[0-9]*$//')
 BOOT_NUM=\$(echo "\$BOOT_PART" | sed 's/.*[^0-9]\([0-9]*\)$/\1/')
 
