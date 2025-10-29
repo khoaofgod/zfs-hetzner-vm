@@ -763,6 +763,7 @@ else
         mkdir -p /boot/efi/grub
 
         # Try multiple locations for GRUB EFI files
+        # Use safe array expansion to avoid 'unbound variable' with set -u
         GRUB_EFI_LOCATIONS=(
             "/usr/lib/grub/arm64-efi/monolithic/grubaa64.efi"
             "/usr/lib/grub/arm64-efi/grubaa64.efi"
@@ -770,11 +771,17 @@ else
         )
 
         GRUB_EFI_FOUND=false
-        for location in "${GRUB_EFI_LOCATIONS[@]}"; do
-            if [ -f "$location" ]; then
-                echo "Found GRUB EFI file at $location, copying..."
-                cp "$location" /boot/efi/EFI/ubuntu/grubaa64.efi
-                echo "✓ Manual GRUB EFI file copy completed from $location"
+        # Safe array expansion: use [@]:-  to avoid unbound variable error
+        for location in "\${GRUB_EFI_LOCATIONS[@]:-}"; do
+            # Skip empty entries
+            if [ -z "\${location:-}" ]; then
+                continue
+            fi
+
+            if [ -f "\$location" ]; then
+                echo "Found GRUB EFI file at \$location, copying..."
+                cp "\$location" /boot/efi/EFI/ubuntu/grubaa64.efi
+                echo "✓ Manual GRUB EFI file copy completed from \$location"
                 GRUB_EFI_FOUND=true
                 break
             fi
@@ -791,17 +798,21 @@ else
             echo "Attempting to install fallback EFI boot manager..."
             apt install -y --reinstall grub-efi-arm64-bin
 
-            # Check again after reinstall
-            for location in "${GRUB_EFI_LOCATIONS[@]}"; do
-                if [ -f "$location" ]; then
-                    echo "Found GRUB EFI file after reinstall at $location"
-                    cp "$location" /boot/efi/EFI/ubuntu/grubaa64.efi
+            # Check again after reinstall - use safe array expansion
+            for location in "\${GRUB_EFI_LOCATIONS[@]:-}"; do
+                if [ -z "\${location:-}" ]; then
+                    continue
+                fi
+
+                if [ -f "\$location" ]; then
+                    echo "Found GRUB EFI file after reinstall at \$location"
+                    cp "\$location" /boot/efi/EFI/ubuntu/grubaa64.efi
                     GRUB_EFI_FOUND=true
                     break
                 fi
             done
 
-            if [ "$GRUB_EFI_FOUND" = false ]; then
+            if [ "\$GRUB_EFI_FOUND" = false ]; then
                 echo "❌ ERROR: Still cannot find GRUB EFI files"
                 exit 1
             fi
